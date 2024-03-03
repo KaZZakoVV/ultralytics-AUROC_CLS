@@ -9,6 +9,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch
 
+from sklearn.metrics import roc_auc_score, roc_curve
 from ultralytics.utils import LOGGER, SimpleClass, TryExcept, plt_settings
 
 OKS_SIGMA = (
@@ -280,6 +281,87 @@ def smooth_BCE(eps=0.1):
     """
     return 1.0 - 0.5 * eps, 0.5 * eps
 
+class AUROC:
+    """ Compute the auroc scores, given the auc for each class.
+    """
+    def __init__(self, nc, conf=0.25, iou_thres=0.45):
+        self.auc_scores = np.zeros(nc)  # Store the AUROC score for each cls
+        self.nc = nc  # number of cls
+        self.conf = conf  # confidence threshold
+        self.iou_thres = iou_thres  # IoU threshold
+
+        self.pred = [[] for _ in range(nc)]  # list to store model predictions for each class
+        self.true = [[] for _ in range(nc)]  # list to store truth labels for each class
+
+        #import subprocess
+        #subprocess.check_call(['pip', 'install', 'scikit-learn'])
+        #subprocess.check_call(['pip', 'install', 'plotly', 'kaleido'])
+
+    def process_batch(self, detections, labels):
+        if detections is None:
+            return
+
+        self.pred = torch.div(
+            torch.cat(detections),
+            torch.rot90(
+                torch.sum(
+                    torch.cat(detections),
+                    1).
+                repeat(self.nc, 1))).cpu().numpy()
+
+        labelsTmp = torch.cat(labels).cpu().numpy()
+
+        true = np.zeros(shape=(self.pred.shape[0], self.pred.shape[1]))
+        for i in range(self.pred.shape[0]):
+            for j in range(self.pred.shape[1]):
+                true[i, j] = labelsTmp[i] == j
+
+        self.true = true
+
+    def out(self):
+        '''
+        Computes the AUROC score for each category and returns it.
+        '''
+        auc_scores = np.zeros(self.nc)
+        fpr_ = [[] for _ in range(self.nc)]
+        tpr_ = [[] for _ in range(self.nc)]
+
+        for class_id in range(self.nc):
+            labels = self.true[:, class_id]
+            preds = self.pred[:, class_id]
+            try:
+                fpr_class, tpr_class, _ = roc_curve(labels, preds, drop_intermediate=False)
+                auc_scores[class_id] = roc_auc_score(labels, preds, multi_class='ovr')
+                fpr_[class_id] = fpr_class
+                tpr_[class_id] = tpr_class
+            except ValueError:
+                auc_scores[class_id] = 0
+        return auc_scores, fpr_, tpr_
+
+    def plot_auroc_curve(self, fpr_, tpr_, auc_scores, save_dir='', names=()):
+        # AUROC curve
+        fig, ax = plt.subplots(1, 1, figsize=(9, 6), tight_layout=True)
+
+        if 0 < len(names) < 21:  # display per-class legend if < 21 classes
+            for i in range(len(names)):
+                ax.plot(fpr_[i], tpr_[i], linewidth=1, label=f'{list(names)[i]} {auc_scores[i]:.3f}')  # plot(F_PR, T_PR)
+        else:
+            for i in range(len(names)):
+                ax.plot(fpr_[i], tpr_[i], linewidth=1, color='grey')  # plot(F_PR, T_PR)
+
+        ax.plot([0, 1], [0, 1], linestyle='--', color='black', linewidth=1)  # diagonal line
+        ax.set_xlabel('False Positive Rate')
+        ax.set_ylabel('True Positive Rate')
+        ax.set_xlim(0, 1)
+        ax.set_ylim(0, 1)
+        ax.legend(bbox_to_anchor=(1.04, 1), loc='upper left')
+        ax.set_title('AUROC Curve')
+        if save_dir:
+            save_path = Path(save_dir) / 'auroc_curve.png'
+            fig.savefig(save_path, dpi=250)
+            # print(f'Saved AUROC curve at: {save_path}')
+        plt.close(fig)
+        # print('plot_auroc_curve DONE')
 
 class ConfusionMatrix:
     """

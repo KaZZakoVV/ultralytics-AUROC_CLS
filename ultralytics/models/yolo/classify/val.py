@@ -5,7 +5,7 @@ import torch
 from ultralytics.data import ClassificationDataset, build_dataloader
 from ultralytics.engine.validator import BaseValidator
 from ultralytics.utils import LOGGER
-from ultralytics.utils.metrics import ClassifyMetrics, ConfusionMatrix
+from ultralytics.utils.metrics import AUROC, ClassifyMetrics, ConfusionMatrix
 from ultralytics.utils.plotting import plot_images
 
 
@@ -31,6 +31,7 @@ class ClassificationValidator(BaseValidator):
         super().__init__(dataloader, save_dir, pbar, args, _callbacks)
         self.targets = None
         self.pred = None
+        self.preds = None
         self.args.task = "classify"
         self.metrics = ClassifyMetrics()
 
@@ -43,7 +44,9 @@ class ClassificationValidator(BaseValidator):
         self.names = model.names
         self.nc = len(model.names)
         self.confusion_matrix = ConfusionMatrix(nc=self.nc, conf=self.args.conf, task="classify")
+        self.aucroc = AUROC(nc=self.nc, conf=self.args.conf)
         self.pred = []
+        self.preds = []
         self.targets = []
 
     def preprocess(self, batch):
@@ -56,17 +59,21 @@ class ClassificationValidator(BaseValidator):
     def update_metrics(self, preds, batch):
         """Updates running metrics with model predictions and batch targets."""
         n5 = min(len(self.names), 5)
+        self.preds.append(preds)
         self.pred.append(preds.argsort(1, descending=True)[:, :n5])
         self.targets.append(batch["cls"])
 
     def finalize_metrics(self, *args, **kwargs):
         """Finalizes metrics of the model such as confusion_matrix and speed."""
         self.confusion_matrix.process_cls_preds(self.pred, self.targets)
+        self.aucroc.process_batch(self.preds, self.targets)
         if self.args.plots:
             for normalize in True, False:
                 self.confusion_matrix.plot(
                     save_dir=self.save_dir, names=self.names.values(), normalize=normalize, on_plot=self.on_plot
                 )
+            auc_scores, fpr_, tpr_ = self.aucroc.out()
+            self.aucroc.plot_auroc_curve(fpr_, tpr_, auc_scores, save_dir=self.save_dir, names=self.names.values())
         self.metrics.speed = self.speed
         self.metrics.confusion_matrix = self.confusion_matrix
         self.metrics.save_dir = self.save_dir
